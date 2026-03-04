@@ -127,7 +127,7 @@ Copy `.env.example` to `.env.local` and fill in:
 ```bash
 SUPABASE_URL=https://your-project.supabase.co
 SUPABASE_ANON_KEY=your-key
-STRIPE_API_KEY=sk_test_xxx
+STRIPE_API_KEY=YOUR_STRIPE_API_KEY
 CLIO_API_KEY=xxx  # or PRACTICEPANTHER_API_KEY
 ```
 
