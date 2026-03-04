@@ -257,6 +257,34 @@ Clio / PracticePanther
 
 ---
 
+## Engagement & Budget
+
+### Team & Timeline
+
+| Role | Allocation | Duration |
+|------|-----------|----------|
+| Lead PM (Jacob) | 15 hrs/week | 10 weeks |
+| Lead Developer (US) | 35 hrs/week | 10 weeks |
+| Offshore Developer(s) | 1 × 30 hrs/week | 10 weeks |
+| QA Engineer | 10 hrs/week | 10 weeks |
+
+**Timeline:** 10 weeks total across 3 phases
+- **Phase 1: Discovery & Design** (2 weeks) — Engagement workflow mapping, scope definition framework, billing integration requirements, change order template design
+- **Phase 2: Core Build** (6 weeks) — Scope tracking engine, drift detection algorithms, change order generator, Stripe billing integration, partner dashboard
+- **Phase 3: Integration & Launch** (2 weeks) — Practice management system integration, partner training, threshold calibration, pilot with 5 active matters
+
+### Budget Summary
+
+| Category | Cost | Notes |
+|----------|------|-------|
+| PM & Strategy | $27,750 | Discovery, specs, stakeholder management |
+| Development (Lead + Offshore) | $72,150 | Core platform build |
+| QA Engineer | $3,500 | Testing and quality assurance |
+| **Total Engagement** | **$103,400** | Fixed-price, phases billed at milestones |
+| **Ongoing Run Rate** | **$450/month** | Infrastructure + AI tokens + support |
+
+---
+
 ## What This Demonstrates
 
 - **Identifying a non-obvious product opportunity** in a domain where most tools focus on billing, not pre-billing scope management
