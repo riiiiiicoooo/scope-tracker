@@ -2,7 +2,7 @@
 
 **Scope drift detection for fixed-fee professional services engagements.**
 
-Built for a 20-person transactional law firm that was hemorrhaging margin on fixed-fee M&A and real estate deals. Partners would sign a deal at $35k fixed fee, and by closing, the firm had burned $48k in billable-equivalent hours. Nobody flagged it because the scope crept gradually — each individual client ask seemed small.
+Built for a 20-person transactional law firm that was hemorrhaging margin on fixed-fee M&A and real estate deals. Partners would sign a deal at $35k fixed fee, and by closing, the firm had burned $48k in billable-equivalent hours. Nobody flagged it because the scope crept gradually, each individual client ask seemed small.
 
 ---
 
