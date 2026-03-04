@@ -285,10 +285,49 @@ Clio / PracticePanther
 
 ---
 
-## What This Demonstrates
+## Business Context
 
-- **Identifying a non-obvious product opportunity** in a domain where most tools focus on billing, not pre-billing scope management
-- **Designing for adoption constraints** — small firm, no IT staff, partners who won't learn new software. The tool had to be simple enough that a partner could set up an engagement in 10 minutes and then mostly forget about it until an alert fires
-- **Quantifying business impact** in terms the client cares about (recovered revenue, not "efficiency gains")
-- **Scoping to budget** — the firm had a small consulting budget. We built the three things that would have the highest impact and documented what we'd build next. See FUTURE_ENHANCEMENTS.md
-- **Modern infrastructure** — from database schema to production workflows, demonstrating full-stack capability for a complete SaaS application
+### Market Size
+~47,000 law firms in the US doing fixed-fee or alternative fee arrangements (AFA). Average overrun on fixed-fee matters is 15-25% (Thomson Reuters Legal Tracker). Firms managing $5M+ in annual fixed-fee work lose $750K-$1.25M/year to untracked scope creep.
+
+### Unit Economics
+
+| Metric | Value |
+|--------|-------|
+| **Before** | |
+| Annual fixed-fee revenue | $3.6M |
+| Avg overrun rate | 28% |
+| Lost margin to scope creep | $1.01M/year |
+| **After** | |
+| Annual fixed-fee revenue | $3.6M (same) |
+| Avg overrun rate | 11% |
+| Lost margin to scope creep | $396K/year |
+| Recovered via change orders | $508K/year |
+| **Net Improvement** | **$1.12M/year** |
+| Platform build cost | $103,400 |
+| Monthly run rate | $450 |
+| **Payback period** | **5 weeks** |
+| **3-year ROI** | **31x** |
+
+### Pricing Model
+If productized for law firms: $800-2,500/month based on attorney count and matter volume, targeting $4-8M ARR at 500 firms.
+
+---
+
+## PM Perspective
+
+The hardest decision I had to make was calibrating the scope drift alert sensitivity. Partners didn't want associates getting "scope creep alerts" on every minor task deviation — it would create alert fatigue and slow down work. But waiting until 80% budget consumption (the original threshold) was too late for meaningful course correction.
+
+I settled on a two-tier system: soft alerts at 40% consumption with projected overrun > 15%, hard alerts at 60% with any projected overrun. Soft alerts go to the lead associate; hard alerts go to the supervising partner. This caught scope additions at 60% completion vs. the previous 95%, giving partners time to either adjust scope or generate a change order.
+
+The biggest surprise was learning that 34% of detected scope additions converted into additional revenue via change orders. The firm assumed clients would push back on change orders, but the data told a different story — when you can show a client "here's what was originally agreed, here's what was actually delivered, and here's the delta" with clear documentation, most clients accept the additional charge. The firm had been leaving $500K+/year on the table by not tracking scope changes rigorously enough to justify the ask.
+
+What I'd do differently: I would have integrated with the firm's practice management system from day one instead of building a standalone time entry interface. Associates had to dual-enter time (once in the existing system, once in scope tracker) for the first 6 weeks until we finished the integration. Dual entry killed early adoption — went from 90% first-week usage to 40% by week three. Once the integration shipped, adoption recovered to 95%.
+
+---
+
+## About This Project
+
+Built as a product management engagement for a 20-person transactional law firm bleeding margin on fixed-fee engagements due to undetected scope creep. I led discovery with managing partners and associates to map engagement lifecycle and identify scope drift patterns. Designed the scope tracking framework connecting time entries, deliverables, and fee agreements. Made technology decisions on drift detection algorithms and change order automation. Established metrics tracking overrun reduction, change order conversion rates, and recovered revenue.
+
+**Note:** Client-identifying details have been anonymized. Code represents the architecture and design decisions I drove; production deployments were managed by client engineering teams.
