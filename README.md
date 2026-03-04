@@ -114,9 +114,153 @@ The tracker breaks this cycle at Week 3, not Week 7.
 
 ---
 
+## Modern Stack Infrastructure
+
+The Scope Tracker now includes production-ready infrastructure for deployment and scaling:
+
+### 1. **Cursor Configuration (`.cursorrules`)**
+- Embedded AI context for feature consistency
+- Scope creep detection patterns and business logic
+- Fixed-fee engagement economics reference
+- Drift detection and change order workflows
+
+### 2. **Database & Schema** (`supabase/migrations/001_initial_schema.sql`)
+- **PostgreSQL schema** with:
+  - Engagements, deliverables, time entries, drift events, change orders
+  - Row-Level Security (RLS) for multi-tenant access control
+  - Partners see all firm engagements; associates see assigned engagements only
+  - Immutable audit trail for all scope decisions
+  - Indexes on engagement, deliverable, and time entry queries
+
+### 3. **Automation Workflows** (n8n)
+
+**Time Entry Import** (`n8n/time_entry_import.json`):
+- Webhook listener for Clio/PracticePanther time entry events
+- Parses entries, matches to scoped deliverables
+- Auto-tags unscoped work (confidence-based keyword matching)
+- Triggers Trigger.dev drift detection job
+- Returns processed entry status to caller
+
+**Weekly Engagement Digest** (`n8n/weekly_engagement_digest.json`):
+- Monday 8 AM cron job
+- Fetches all active engagements, calculates metrics (burn rate, drift %, remaining budget)
+- Groups by partner owner
+- Ranks by risk (critical drift, then high unscoped %, then budget exposure)
+- Sends summary emails to partners with engagement health dashboard
+
+### 4. **Drift Detection & Change Orders** (Trigger.dev)
+
+**Drift Detection Job** (`trigger-jobs/drift_detection.ts`):
+- Analyzes time entries for engagement
+- Categorizes scoped vs. unscoped hours
+- Calculates drift metrics:
+  - Budget consumed percent
+  - Unscoped hours (and cost at blended rate)
+  - Deliverable overruns (% over estimated hours)
+  - Trend acceleration (drift rate increasing)
+- Detects severity tiers:
+  - **Warning**: >75% budget, <50% completion OR >2 hours unscoped
+  - **Critical**: >90% budget, <25% completion OR >10% unscoped hours
+- Saves immutable drift event to Supabase
+- Triggers alerts if thresholds crossed
+
+**Change Order Generation** (`trigger-jobs/change_order_generation.ts`):
+- Auto-generates change order drafts from drift events
+- Calculates scope additions (hours + cost at blended rate)
+- Proposes revised timeline (+days based on hours)
+- Creates change order with line items
+- Saves to database with "Draft" status (awaiting partner review)
+
+### 5. **Payment & Invoicing** (`stripe/invoicing.py`)
+
+Production-grade Stripe integration:
+- **Create Invoice**: Converts approved change order to Stripe invoice
+  - Line items from change_order_items table
+  - Auto-finalize for partner review
+  - Metadata links invoice → change order → engagement
+
+- **Payment Links**: Generate customer-facing payment links
+  - 30-hour default expiration
+  - Metadata tracking for webhook handlers
+
+- **Webhook Handlers**:
+  - `invoice.paid`: Update change order status, log payment
+  - `invoice.payment_failed`: Flag for follow-up
+  - `invoice.payment_action_required`: Handle 3D Secure, alternative methods
+  - `charge.refunded`: Record refund in change order audit trail
+
+- **Status Tracking**: Get current invoice status, payment history
+
+### 6. **Email Templates** (React Email)
+
+**Drift Alert** (`emails/drift_alert.tsx`):
+- Alert: warning or critical severity badge
+- Metrics: unscoped hours, cost impact, budget remaining
+- Specific entries table (top 10 unscoped entries)
+- Action buttons: Review engagement, Generate change order
+- Recommendations for handling (change order, write-off, admin)
+
+**Change Order Ready** (`emails/change_order_ready.tsx`):
+- Success notification when change order generated
+- Summary: additional hours, cost, revised budget
+- Scope additions list
+- Review checklist
+- Status & next steps
+
+### 7. **Deployment Configuration**
+
+**Vercel** (`vercel.json`):
+- Node.js routes for API endpoints
+- Python runtime for Stripe webhook handlers
+- Cron jobs:
+  - Weekly digest (Monday 8 AM)
+  - Engagement health check (daily 9 AM)
+- Environment variables for all secrets
+
+**Replit Dev Environment** (`.replit`, `replit.nix`):
+- PostgreSQL 15 auto-setup
+- Node.js 20 + Python 3.11
+- Automatic database initialization
+- Local development server
+
+**Environment Variables** (`.env.example`):
+- Documented all integration keys (Supabase, Stripe, Clio, PracticePanther, Resend, etc.)
+- Configurable thresholds (drift warning: 75% budget, etc.)
+- Feature flags for optional integrations
+- Security settings (JWT, CSRF, rate limiting)
+
+### Integration Points
+
+```
+Clio / PracticePanther
+        ↓ (time entry webhook)
+   n8n Listener
+        ↓
+   Parse & Match
+        ↓
+   Trigger.dev: Drift Detection
+        ↓
+   ├─ Save drift event → Supabase
+   ├─ Trigger alerts (email)
+   └─ Auto-generate change order (draft)
+        ↓
+   Trigger.dev: Change Order Generation
+        ↓
+   Create Stripe Invoice
+        ↓
+   Send payment link → Client
+        ↓
+   Stripe Webhook → Payment Status
+        ↓
+   Update change order + audit log
+```
+
+---
+
 ## What This Demonstrates
 
 - **Identifying a non-obvious product opportunity** in a domain where most tools focus on billing, not pre-billing scope management
 - **Designing for adoption constraints** — small firm, no IT staff, partners who won't learn new software. The tool had to be simple enough that a partner could set up an engagement in 10 minutes and then mostly forget about it until an alert fires
 - **Quantifying business impact** in terms the client cares about (recovered revenue, not "efficiency gains")
 - **Scoping to budget** — the firm had a small consulting budget. We built the three things that would have the highest impact and documented what we'd build next. See FUTURE_ENHANCEMENTS.md
+- **Modern infrastructure** — from database schema to production workflows, demonstrating full-stack capability for a complete SaaS application

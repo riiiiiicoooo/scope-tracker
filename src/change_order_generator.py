@@ -30,7 +30,7 @@ from datetime import datetime, date, timedelta
 from typing import Optional
 from collections import defaultdict
 
-from engagement_tracker import (
+from .engagement_tracker import (
     Engagement,
     Deliverable,
     DeliverableStatus,
@@ -38,7 +38,7 @@ from engagement_tracker import (
     ChangeOrder,
     TeamRole,
 )
-from drift_detector import DriftAlert, DriftType, AlertStatus
+from .drift_detector import DriftAlert, DriftType, AlertStatus
 
 
 # ---------------------------------------------------------------------------

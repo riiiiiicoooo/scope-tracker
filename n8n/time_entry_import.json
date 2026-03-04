@@ -1,0 +1,331 @@
+{
+  "name": "Time Entry Import & Drift Detection",
+  "description": "Webhook listener that imports time entries from Clio/PracticePanther, matches them against scoped deliverables, detects drift, and triggers alerts",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "time-entry-webhook",
+        "authentication": "headerAuth",
+        "options": {}
+      },
+      "id": "e1b8c8f1-8d2d-4d8d-8d2d-8d2d8d2d8d2d",
+      "name": "Webhook Listener",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [250, 300],
+      "webhookId": "time-entry-webhook"
+    },
+    {
+      "parameters": {
+        "functionCode": "// Parse incoming time entry from Clio or PracticePanther\nconst entry = $input.first().json;\n\nreturn {\n  source_system: entry.source || 'clio', // 'clio' or 'practicepanther'\n  source_id: entry.id,\n  engagement_id: entry.engagement_id,\n  logged_by_email: entry.user_email,\n  entry_date: entry.date,\n  hours: parseFloat(entry.hours),\n  description: entry.description,\n  billable: entry.billable !== false,\n  raw_data: entry\n};\n"
+      },
+      "id": "parse-entry-node",
+      "name": "Parse Time Entry",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [450, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.SUPABASE_URL }}/rest/v1/time_entries",
+        "authentication": "headerAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "Bearer {{ $env.SUPABASE_ANON_KEY }}"
+            },
+            {
+              "name": "apikey",
+              "value": "{{ $env.SUPABASE_ANON_KEY }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            },
+            {
+              "name": "Prefer",
+              "value": "return=representation"
+            }
+          ]
+        },
+        "body": {
+          "contentType": "application/json",
+          "values": {
+            "engagement_id": "={{ $node['Parse Time Entry'].json.engagement_id }}",
+            "logged_by_id": "={{ $node['Lookup User ID'].json[0].id }}",
+            "entry_date": "={{ $node['Parse Time Entry'].json.entry_date }}",
+            "hours": "={{ $node['Parse Time Entry'].json.hours }}",
+            "description": "={{ $node['Parse Time Entry'].json.description }}",
+            "is_billable": "={{ $node['Parse Time Entry'].json.billable }}",
+            "source_system": "={{ $node['Parse Time Entry'].json.source_system }}",
+            "source_id": "={{ $node['Parse Time Entry'].json.source_id }}",
+            "source_data": "={{ $node['Parse Time Entry'].json.raw_data }}",
+            "category": "billable_work"
+          }
+        }
+      },
+      "id": "upsert-time-entry",
+      "name": "Upsert Time Entry",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [650, 300],
+      "onError": "continueRegardlessly"
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $env.SUPABASE_URL }}/rest/v1/users?email=eq.{{ $node['Parse Time Entry'].json.logged_by_email }}&select=id,firm_id",
+        "authentication": "headerAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "Bearer {{ $env.SUPABASE_ANON_KEY }}"
+            },
+            {
+              "name": "apikey",
+              "value": "{{ $env.SUPABASE_ANON_KEY }}"
+            }
+          ]
+        }
+      },
+      "id": "lookup-user-id",
+      "name": "Lookup User ID",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [450, 150]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $env.SUPABASE_URL }}/rest/v1/scoped_deliverables?engagement_id=eq.{{ $node['Parse Time Entry'].json.engagement_id }}&select=id,title,estimated_hours",
+        "authentication": "headerAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "Bearer {{ $env.SUPABASE_ANON_KEY }}"
+            },
+            {
+              "name": "apikey",
+              "value": "{{ $env.SUPABASE_ANON_KEY }}"
+            }
+          ]
+        }
+      },
+      "id": "fetch-deliverables",
+      "name": "Fetch Deliverables",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [650, 150]
+    },
+    {
+      "parameters": {
+        "functionCode": "// Match time entry to deliverable based on description keyword matching\nconst entry = $input.first().json;\nconst deliverables = $node['Fetch Deliverables'].json;\nconst description = (entry.description || '').toLowerCase();\n\nlet matched_deliverable = null;\nlet confidence = 0;\n\n// Try to match based on keywords in entry description\nfor (const deliverable of deliverables) {\n  const title = deliverable.title.toLowerCase();\n  const keywords = title.split(/\\s+/);\n  \n  let matches = 0;\n  for (const keyword of keywords) {\n    if (keyword.length > 3 && description.includes(keyword)) {\n      matches++;\n    }\n  }\n  \n  const matchScore = matches / keywords.length;\n  if (matchScore > confidence) {\n    confidence = matchScore;\n    matched_deliverable = deliverable;\n  }\n}\n\nreturn {\n  ...entry,\n  matched_deliverable_id: matched_deliverable ? matched_deliverable.id : null,\n  match_confidence: confidence,\n  is_unscoped: confidence < 0.3 && !matched_deliverable\n};\n"
+      },
+      "id": "match-deliverable",
+      "name": "Match to Deliverable",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [850, 225]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "conditions": [
+            {
+              "value1": "={{ $node['Match to Deliverable'].json.is_unscoped }}",
+              "condition": "equal",
+              "value2": true
+            }
+          ]
+        }
+      },
+      "id": "check-unscoped",
+      "name": "Is Unscoped?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [1050, 225]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.trigger.dev/api/v1/runs",
+        "authentication": "headerAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "Bearer {{ $env.TRIGGER_API_KEY }}"
+            }
+          ]
+        },
+        "body": {
+          "contentType": "application/json",
+          "values": {
+            "job": "drift-detection",
+            "payload": {
+              "engagement_id": "={{ $node['Parse Time Entry'].json.engagement_id }}",
+              "trigger_event": "time_entry_created",
+              "time_entry_id": "={{ $node['Upsert Time Entry'].json[0].id }}",
+              "is_unscoped": "={{ $node['Match to Deliverable'].json.is_unscoped }}",
+              "hours": "={{ $node['Parse Time Entry'].json.hours }}"
+            }
+          ]
+        }
+      },
+      "id": "trigger-drift-detection",
+      "name": "Trigger Drift Detection Job",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [1050, 350],
+      "onError": "continueRegardlessly"
+    },
+    {
+      "parameters": {
+        "functionCode": "// Build response for webhook caller\nreturn {\n  status: 'success',\n  message: 'Time entry processed',\n  entry_id: $node['Upsert Time Entry'].json[0]?.id || null,\n  matched_deliverable: $node['Match to Deliverable'].json.matched_deliverable_id,\n  is_unscoped: $node['Match to Deliverable'].json.is_unscoped,\n  drift_detection_triggered: true,\n  timestamp: new Date().toISOString()\n};\n"
+      },
+      "id": "build-response",
+      "name": "Build Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1250, 300]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $env.SUPABASE_URL }}/rest/v1/engagements?id=eq.{{ $node['Parse Time Entry'].json.engagement_id }}&select=id,owner_id,team_members",
+        "authentication": "headerAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "Bearer {{ $env.SUPABASE_ANON_KEY }}"
+            },
+            {
+              "name": "apikey",
+              "value": "{{ $env.SUPABASE_ANON_KEY }}"
+            }
+          ]
+        }
+      },
+      "id": "fetch-engagement",
+      "name": "Fetch Engagement",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [850, 100]
+    }
+  ],
+  "connections": {
+    "Webhook Listener": {
+      "main": [
+        [
+          {
+            "node": "Lookup User ID",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Parse Time Entry",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Time Entry": {
+      "main": [
+        [
+          {
+            "node": "Upsert Time Entry",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Fetch Deliverables",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Fetch Engagement",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Deliverables": {
+      "main": [
+        [
+          {
+            "node": "Match to Deliverable",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Match to Deliverable": {
+      "main": [
+        [
+          {
+            "node": "Is Unscoped?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Is Unscoped?": {
+      "main": [
+        [
+          {
+            "node": "Trigger Drift Detection Job",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Trigger Drift Detection Job",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Upsert Time Entry": {
+      "main": [
+        [
+          {
+            "node": "Build Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Trigger Drift Detection Job": {
+      "main": [
+        [
+          {
+            "node": "Build Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "instanceId": "default"
+  }
+}

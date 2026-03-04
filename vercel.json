@@ -1,0 +1,48 @@
+{
+  "version": 2,
+  "builds": [
+    {
+      "src": "src/index.ts",
+      "use": "@vercel/node"
+    },
+    {
+      "src": "stripe/invoicing.py",
+      "use": "@vercel/python"
+    }
+  ],
+  "routes": [
+    {
+      "src": "/api/(.*)",
+      "dest": "src/index.ts"
+    },
+    {
+      "src": "/stripe/(.*)",
+      "dest": "stripe/invoicing.py"
+    },
+    {
+      "src": "/health",
+      "dest": "src/health.ts"
+    }
+  ],
+  "env": {
+    "SUPABASE_URL": "@supabase_url",
+    "SUPABASE_ANON_KEY": "@supabase_anon_key",
+    "STRIPE_API_KEY": "@stripe_api_key",
+    "STRIPE_WEBHOOK_SECRET": "@stripe_webhook_secret",
+    "TRIGGER_API_KEY": "@trigger_api_key",
+    "RESEND_API_KEY": "@resend_api_key",
+    "N8N_API_KEY": "@n8n_api_key"
+  },
+  "deploymentUrl": "https://scope-tracker.vercel.app",
+  "regions": ["iad1"],
+  "crons": [
+    {
+      "path": "/api/cron/weekly-digest",
+      "schedule": "0 8 ? * MON"
+    },
+    {
+      "path": "/api/cron/engagement-health-check",
+      "schedule": "0 9 ? * * *"
+    }
+  ]
+}

@@ -1,0 +1,265 @@
+{
+  "name": "Weekly Engagement Digest",
+  "description": "Monday 8 AM cron job that queries all active engagements, calculates budget burn, drift percentage, ranks by risk, and emails partners",
+  "nodes": [
+    {
+      "parameters": {
+        "triggerTimes": {
+          "item": [
+            {
+              "hour": 8,
+              "minute": 0,
+              "dayOfWeek": 1
+            }
+          ]
+        }
+      },
+      "id": "cron-weekly",
+      "name": "Weekly Cron (Monday 8 AM)",
+      "type": "n8n-nodes-base.cron",
+      "typeVersion": 1,
+      "position": [250, 300]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $env.SUPABASE_URL }}/rest/v1/engagements?is_active=eq.true&select=id,client_id,matter_name,owner_id,total_budget,estimated_hours,start_date,estimated_completion_date",
+        "authentication": "headerAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "Bearer {{ $env.SUPABASE_ANON_KEY }}"
+            },
+            {
+              "name": "apikey",
+              "value": "{{ $env.SUPABASE_ANON_KEY }}"
+            }
+          ]
+        }
+      },
+      "id": "fetch-engagements",
+      "name": "Fetch Active Engagements",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [450, 300]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $env.SUPABASE_URL }}/rest/v1/rpc/calculate_engagement_metrics",
+        "authentication": "headerAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "Bearer {{ $env.SUPABASE_ANON_KEY }}"
+            },
+            {
+              "name": "apikey",
+              "value": "{{ $env.SUPABASE_ANON_KEY }}"
+            }
+          ]
+        }
+      },
+      "id": "calculate-metrics",
+      "name": "Calculate Metrics (RPC)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [650, 300],
+      "notes": "Calls Supabase RPC function that calculates: total hours logged, budget burned, burn rate, drift %, remaining budget, unscoped hours, projected completion"
+    },
+    {
+      "parameters": {
+        "functionCode": "// Transform engagement data with metrics for digest\nconst engagements = $input.first().json;\nconst metrics = $node['Calculate Metrics (RPC)'].json;\n\n// Merge engagement data with calculated metrics\nconst enriched = engagements.map(engagement => {\n  const engMetrics = metrics.find(m => m.engagement_id === engagement.id) || {};\n  \n  return {\n    ...engagement,\n    hours_logged: engMetrics.hours_logged || 0,\n    budget_burned: engMetrics.budget_burned || 0,\n    budget_remaining: engagement.total_budget - (engMetrics.budget_burned || 0),\n    burn_rate: engMetrics.hours_logged > 0 ? (engagement.total_budget / engMetrics.hours_logged).toFixed(2) : 0,\n    drift_percentage: engMetrics.drift_percentage || 0,\n    unscoped_hours: engMetrics.unscoped_hours || 0,\n    unscoped_amount: engMetrics.unscoped_hours * (engagement.total_budget / engagement.estimated_hours),\n    completion_percentage: engMetrics.hours_logged > 0 ? ((engMetrics.hours_logged / engagement.estimated_hours) * 100).toFixed(0) : 0,\n    days_elapsed: Math.floor((new Date() - new Date(engagement.start_date)) / (1000 * 60 * 60 * 24)),\n    days_remaining: Math.floor((new Date(engagement.estimated_completion_date) - new Date()) / (1000 * 60 * 60 * 24))\n  };\n});\n\n// Sort by risk: critical first, then high drift %, then highest budget exposed\nconst sorted = enriched.sort((a, b) => {\n  const riskA = a.drift_percentage > 25 ? 0 : a.drift_percentage > 10 ? 1 : 2;\n  const riskB = b.drift_percentage > 25 ? 0 : b.drift_percentage > 10 ? 1 : 2;\n  \n  if (riskA !== riskB) return riskA - riskB;\n  return b.unscoped_amount - a.unscoped_amount;\n});\n\nreturn sorted;\n"
+      },
+      "id": "enrich-engagements",
+      "name": "Enrich & Rank by Risk",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [850, 300]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $env.SUPABASE_URL }}/rest/v1/users?role=eq.partner&select=id,full_name,email,firm_id",
+        "authentication": "headerAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "Bearer {{ $env.SUPABASE_ANON_KEY }}"
+            },
+            {
+              "name": "apikey",
+              "value": "{{ $env.SUPABASE_ANON_KEY }}"
+            }
+          ]
+        }
+      },
+      "id": "fetch-partners",
+      "name": "Fetch Partners",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [450, 450]
+    },
+    {
+      "parameters": {
+        "functionCode": "// Group engagements by partner (owner) and prepare email payloads\nconst enriched = $node['Enrich & Rank by Risk'].json;\nconst partners = $node['Fetch Partners'].json;\n\nconst grouped = {};\npartners.forEach(partner => {\n  grouped[partner.id] = {\n    partner_id: partner.id,\n    partner_name: partner.full_name,\n    partner_email: partner.email,\n    firm_id: partner.firm_id,\n    engagements: []\n  };\n});\n\n// Assign engagements to their owners\nenriched.forEach(eng => {\n  if (grouped[eng.owner_id]) {\n    grouped[eng.owner_id].engagements.push(eng);\n  }\n});\n\n// Convert to array and filter out partners with no engagements\nconst digests = Object.values(grouped).filter(d => d.engagements.length > 0);\n\nreturn digests;\n"
+      },
+      "id": "group-by-partner",
+      "name": "Group by Partner",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1050, 375]
+    },
+    {
+      "parameters": {
+        "fromEmail": "scope-tracker@firm.example.com",
+        "toEmail": "={{ $item(0).partner_email }}",
+        "subject": "Weekly Engagement Health Report - {{ new Date().toLocaleDateString('en-US', {weekday: 'long', year: 'numeric', month: 'long', day: 'numeric'}) }}",
+        "emailType": "text",
+        "textOnly": false,
+        "htmlEmail": "={{ require('fs').readFileSync('emails/weekly_digest_template.html', 'utf-8')\n  .replace('{{PARTNER_NAME}}', $item(0).partner_name)\n  .replace('{{CRITICAL_COUNT}}', $item(0).engagements.filter(e => e.drift_percentage > 25).length)\n  .replace('{{HIGH_RISK_COUNT}}', $item(0).engagements.filter(e => e.drift_percentage > 10 && e.drift_percentage <= 25).length)\n  .replace('{{TOTAL_UNSCOPED}}', $item(0).engagements.reduce((sum, e) => sum + e.unscoped_hours, 0).toFixed(1))\n  .replace('{{TOTAL_EXPOSED_AMOUNT}}', '$' + $item(0).engagements.reduce((sum, e) => sum + e.unscoped_amount, 0).toFixed(0))\n}}"
+      },
+      "id": "send-digest-email",
+      "name": "Send Digest Email",
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 1,
+      "position": [1250, 375],
+      "credentials": {
+        "emailAccount": "default-email"
+      }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.SUPABASE_URL }}/rest/v1/email_logs",
+        "authentication": "headerAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "Bearer {{ $env.SUPABASE_ANON_KEY }}"
+            },
+            {
+              "name": "apikey",
+              "value": "{{ $env.SUPABASE_ANON_KEY }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "body": {
+          "contentType": "application/json",
+          "values": {
+            "email_type": "weekly_digest",
+            "recipient_emails": \"[\\\"{{ $item(0).partner_email }}\\\"]",
+            "subject": "Weekly Engagement Health Report",
+            "status": "sent",
+            "sent_at": "={{ new Date().toISOString() }}"
+          }
+        }
+      },
+      "id": "log-email",
+      "name": "Log Email",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [1450, 375],
+      "onError": "continueRegardlessly"
+    }
+  ],
+  "connections": {
+    "Weekly Cron (Monday 8 AM)": {
+      "main": [
+        [
+          {
+            "node": "Fetch Active Engagements",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Fetch Partners",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Active Engagements": {
+      "main": [
+        [
+          {
+            "node": "Calculate Metrics (RPC)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Calculate Metrics (RPC)": {
+      "main": [
+        [
+          {
+            "node": "Enrich & Rank by Risk",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Enrich & Rank by Risk": {
+      "main": [
+        [
+          {
+            "node": "Group by Partner",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Partners": {
+      "main": [
+        [
+          {
+            "node": "Group by Partner",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Group by Partner": {
+      "main": [
+        [
+          {
+            "node": "Send Digest Email",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send Digest Email": {
+      "main": [
+        [
+          {
+            "node": "Log Email",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "instanceId": "default"
+  }
+}

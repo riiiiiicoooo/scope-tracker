@@ -21,7 +21,7 @@ from typing import Optional
 from collections import defaultdict
 
 # Import from engagement_tracker (same directory)
-from engagement_tracker import (
+from .engagement_tracker import (
     Engagement,
     EngagementStatus,
     Deliverable,

@@ -1,0 +1,36 @@
+# Scope Tracker — No External Dependencies for Core Functionality
+#
+# This project uses only Python standard library for the core scope tracking,
+# import, detection, and document generation modules. This is intentional—
+# designed for deployment at small firms with minimal IT infrastructure.
+#
+# The requirements below are optional, for enhanced features:
+#
+# - flask: For lightweight REST API (if serving drift alerts via HTTP)
+# - jinja2: For more sophisticated document templating (Markdown is built-in)
+# - reportlab: For PDF generation (currently Markdown only)
+# - pytest: For running the test suite
+#
+# Installation: pip install -r requirements.txt
+# (But not required to run the core tool.)
+
+# Optional: Lightweight REST API
+# flask==2.3.3
+# flask-cors==4.0.0
+
+# Optional: Template engine for documents
+# jinja2==3.1.2
+
+# Optional: PDF generation
+# reportlab==4.0.4
+
+# Optional: Database support (if moving beyond JSON)
+# sqlalchemy==2.0.21
+# sqlite3  # built-in
+
+# Development/Testing
+pytest==7.4.2
+pytest-cov==4.1.0
+black==23.10.1
+flake8==6.1.0
+mypy==1.6.1

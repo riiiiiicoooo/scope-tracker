@@ -1,0 +1,95 @@
+# Scope Tracker - Cursor AI Rules
+
+## Project Context
+Scope Tracker is a scope creep detection system for fixed-fee professional services engagements. It tracks planned deliverables vs. actual time entries to detect drift, alert partners, and generate change orders.
+
+## Core Concepts
+- **Engagement**: A fixed-fee or hourly project with client, budget, fee structure, team, timeline
+- **Scoped Deliverables**: Specific outputs promised to client (e.g., "Purchase agreement review", "Due diligence report") with estimated hours
+- **Time Entries**: Actual work logged (date, hours, category, description) matched against deliverables
+- **Drift**: Divergence between planned scope and actual work (budget overrun, unscoped hours, timeline slip)
+- **Change Order**: Document proposing scope expansion, additional hours, cost impact, revised terms
+- **Risk Tiers**: Warning (75% budget, <50% complete), Critical (90% budget, <25% complete), Resolved (change order approved)
+
+## Feature Domains
+
+### 1. Drift Detection
+- Time entries that don't match any scoped deliverable → flag as "unscoped"
+- Deliverables consuming >75% budget → alert if <50% complete
+- Unscoped hours accumulation → calculate additional cost at firm's blended rate
+- Timeline slip detection: work logged past planned completion date
+- Trend acceleration: drift growing faster than early days
+
+### 2. Change Order Generation
+- From drift alerts: propose new deliverable scope, hours, cost
+- Keep format: professional document with client context, specific entries, revised timeline
+- Track status: Draft → Sent to Client → Approved → Billed
+- Link to time entries that triggered it
+
+### 3. Fixed-Fee Engagement Economics
+- Total budget (not hourly rates) - client has agreed to fixed amount
+- Blended hour rate = budget / estimated hours for cost calculations
+- Margin impact = (budget - actual_hours * blended_rate) / budget
+- Over-budget is cost absorbed by firm if not change-ordered
+
+### 4. Integration Points
+- Time entry import: Clio, PracticePanther CSV exports
+- Webhook listeners: new time entry events trigger drift detection
+- Email alerts: to responsible partner when drift crosses thresholds
+- Change order invoicing: Stripe integration for approved change orders
+- Database: Supabase PostgreSQL with RLS for multi-user access
+
+## Code Patterns
+
+### TypeScript/Node (Trigger.dev, n8n, API)
+- Use production patterns: error handling, logging, type safety
+- Drift detection job: analyze entries in batches, calculate metrics, persist events
+- Change order job: build structured payload from drift data, template rendering
+- Always return structured responses for webhooks/jobs
+
+### Python (Legacy)
+- Maintain compatibility with existing src/ modules
+- New features in TypeScript using modern patterns
+- Data classes for type safety
+
+### Email Templates (React Email)
+- Use React Email + Tailwind for responsive HTML emails
+- Include specific time entries in drift alerts (table format)
+- Change order ready email: summary + approval link
+
+### Database Schema (Supabase/PostgreSQL)
+- Row-Level Security: partners see all firm engagements, associates see assigned only
+- Drift events immutable (audit trail)
+- Time entries linked to source system (clio_id, pp_id) to avoid duplicates
+- Change orders linked to drift events
+
+## Thresholds & Configuration
+- Drift warning: 75% budget consumed + <50% completion
+- Drift critical: 90% budget consumed + <25% completion
+- Unscoped work threshold: >2 hours on unmatched entries
+- Email alert recipients: engagement owner (primary), managing partner (cc)
+- Change order auto-draft: triggered when critical drift detected
+
+## Common Mistakes to Avoid
+- Don't assume time entries from different systems are deduplicated
+- Don't calculate cost impact at full hourly rate (use blended rate for fixed-fee)
+- Don't send change order drafts to clients without partner review
+- Don't lose connection between drift event and specific time entries that caused it
+- Don't use engagement completion % as sole indicator (use time burned vs. budget)
+
+## Testing Considerations
+- Synthetic engagement data with known drift patterns for manual testing
+- n8n: test with webhook replay from sample time entries
+- Drift detection: validate against historic data from demo engagements
+- Change order rendering: verify HTML renders correctly in email clients
+
+## Performance Notes
+- Batch drift detection (process all entries for engagement in one job run)
+- Cache blended rates (don't recalculate per entry)
+- RLS policy limits query scope (no N+1 queries on engagement lookups)
+- Email delivery async (queue, don't block workflow)
+
+## Documentation Requirements
+- Every public function includes JSDoc with parameter types and examples
+- Configuration environment variables documented in `.env.example`
+- n8n workflows have step-by-step comments explaining logic flow
