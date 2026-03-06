@@ -25,12 +25,11 @@
 # reportlab==4.0.4
 
 # Optional: Database support (if moving beyond JSON)
-# sqlalchemy==2.0.21
+# sqlalchemy==2.0.36
 # sqlite3  # built-in
 
 # Development/Testing
-pytest==7.4.2
-pytest-cov==4.1.0
-black==23.10.1
-flake8==6.1.0
-mypy==1.6.1
+pytest==8.3.0
+pytest-cov==5.0.0
+ruff==0.8.0
+mypy==1.13.0

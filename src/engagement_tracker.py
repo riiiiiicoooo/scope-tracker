@@ -9,6 +9,23 @@ tracks actual time against it.
 Design constraint: no ORM, no database dependencies. The firm's IT
 infrastructure was a shared drive and Outlook. This runs on dataclasses
 and could persist to JSON files. Production would use SQLite at most.
+
+Production Notes (not implemented in this demo):
+- Stripe Webhook Verification: If billing integration is added (subscription
+  for SaaS version), verify Stripe webhook signatures using the endpoint secret
+  and stripe.Webhook.construct_event(). Reject unsigned payloads.
+- Authentication: Production would add Clerk or Auth0 middleware. For a law
+  firm tool, enforce firm-level tenant scoping — attorneys see only their own
+  engagements unless they have a partner/admin role.
+- Decimal for Money: All monetary calculations (fixed fees, budget amounts,
+  hourly rates) should use Python's decimal.Decimal with ROUND_HALF_UP to
+  avoid floating-point errors in billing. See fintech-operations-platform for
+  the pattern already implemented in this portfolio.
+- Audit Trail: Legal billing is subject to ABA Model Rule 1.15 (safekeeping
+  property) and state bar trust accounting rules. Every time entry and budget
+  modification must be logged immutably with user_id and timestamp.
+- Data Export: Law firms require data portability for matter transfers. Support
+  LEDES 1998B and UTBMS export formats for time entries and billing data.
 """
 
 from dataclasses import dataclass, field
