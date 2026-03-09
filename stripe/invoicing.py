@@ -14,7 +14,8 @@ from typing import Optional, Dict, List, Any
 from dataclasses import dataclass, asdict
 
 import stripe
-from supabase import create_client, Client
+import psycopg2
+from psycopg2.extras import RealDictCursor
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -24,11 +25,10 @@ logger = logging.getLogger(__name__)
 stripe.api_key = os.environ.get("STRIPE_API_KEY")
 STRIPE_WEBHOOK_SECRET = os.environ.get("STRIPE_WEBHOOK_SECRET")
 
-# Initialize Supabase
-supabase: Client = create_client(
-    os.environ.get("SUPABASE_URL", ""),
-    os.environ.get("SUPABASE_ANON_KEY", ""),
-)
+# Database connection
+DATABASE_URL = os.environ.get("DATABASE_URL", "")
+if not DATABASE_URL:
+    raise ValueError("DATABASE_URL environment variable is not set")
 
 
 @dataclass
@@ -52,9 +52,9 @@ class InvoiceMetadata:
 class StripeInvoicingService:
     """Service for managing invoices and payments via Stripe."""
 
-    def __init__(self):
+    def __init__(self, database_url: Optional[str] = None):
         self.stripe_client = stripe
-        self.supabase = supabase
+        self.database_url = database_url or DATABASE_URL
 
     def create_invoice_from_change_order(
         self,
@@ -234,29 +234,50 @@ class StripeInvoicingService:
             logger.warning(f"No change_order_id in invoice metadata: {invoice['id']}")
             return {"status": "no_change_order"}
 
-        # Update change order status
-        self.supabase.table("change_orders").update({
-            "payment_status": "paid",
-            "updated_at": datetime.utcnow().isoformat(),
-        }).eq("id", change_order_id).execute()
+        try:
+            conn = psycopg2.connect(self.database_url)
+            cur = conn.cursor()
 
-        logger.info(f"Updated change order {change_order_id} status to paid")
+            # Update change order status
+            cur.execute(
+                """
+                UPDATE change_orders
+                SET payment_status = %s, updated_at = %s
+                WHERE id = %s
+                """,
+                ("paid", datetime.utcnow().isoformat(), change_order_id),
+            )
 
-        # Log payment in email_logs for audit trail
-        self.supabase.table("email_logs").insert({
-            "change_order_id": change_order_id,
-            "email_type": "payment_confirmation",
-            "recipient_emails": [],
-            "subject": f"Payment Received - Change Order {change_order_id}",
-            "status": "sent",
-            "sent_at": datetime.utcnow().isoformat(),
-        }).execute()
+            logger.info(f"Updated change order {change_order_id} status to paid")
 
-        return {
-            "status": "success",
-            "change_order_id": change_order_id,
-            "payment_status": "paid",
-        }
+            # Log payment in email_logs for audit trail
+            cur.execute(
+                """
+                INSERT INTO email_logs (change_order_id, email_type, subject, status, sent_at)
+                VALUES (%s, %s, %s, %s, %s)
+                """,
+                (
+                    change_order_id,
+                    "payment_confirmation",
+                    f"Payment Received - Change Order {change_order_id}",
+                    "sent",
+                    datetime.utcnow().isoformat(),
+                ),
+            )
+
+            conn.commit()
+            cur.close()
+            conn.close()
+
+            return {
+                "status": "success",
+                "change_order_id": change_order_id,
+                "payment_status": "paid",
+            }
+
+        except Exception as e:
+            logger.error(f"Failed to handle payment: {str(e)}")
+            raise
 
     def _handle_invoice_payment_failed(self, invoice: Dict[str, Any]) -> Dict[str, Any]:
         """Handle invoice.payment_failed event."""
@@ -268,19 +289,35 @@ class StripeInvoicingService:
             )
             return {"status": "no_change_order"}
 
-        # Update change order status
-        self.supabase.table("change_orders").update({
-            "payment_status": "failed",
-            "updated_at": datetime.utcnow().isoformat(),
-        }).eq("id", change_order_id).execute()
+        try:
+            conn = psycopg2.connect(self.database_url)
+            cur = conn.cursor()
 
-        logger.warning(f"Payment failed for change order {change_order_id}")
+            # Update change order status
+            cur.execute(
+                """
+                UPDATE change_orders
+                SET payment_status = %s, updated_at = %s
+                WHERE id = %s
+                """,
+                ("failed", datetime.utcnow().isoformat(), change_order_id),
+            )
 
-        return {
-            "status": "payment_failed",
-            "change_order_id": change_order_id,
-            "invoice_id": invoice["id"],
-        }
+            conn.commit()
+            cur.close()
+            conn.close()
+
+            logger.warning(f"Payment failed for change order {change_order_id}")
+
+            return {
+                "status": "payment_failed",
+                "change_order_id": change_order_id,
+                "invoice_id": invoice["id"],
+            }
+
+        except Exception as e:
+            logger.error(f"Failed to handle payment failure: {str(e)}")
+            raise
 
     def _handle_payment_action_required(
         self, invoice: Dict[str, Any]
@@ -291,19 +328,35 @@ class StripeInvoicingService:
         if not change_order_id:
             return {"status": "no_change_order"}
 
-        # Update status to indicate action needed
-        self.supabase.table("change_orders").update({
-            "payment_status": "action_required",
-            "updated_at": datetime.utcnow().isoformat(),
-        }).eq("id", change_order_id).execute()
+        try:
+            conn = psycopg2.connect(self.database_url)
+            cur = conn.cursor()
 
-        logger.info(f"Payment action required for change order {change_order_id}")
+            # Update status to indicate action needed
+            cur.execute(
+                """
+                UPDATE change_orders
+                SET payment_status = %s, updated_at = %s
+                WHERE id = %s
+                """,
+                ("action_required", datetime.utcnow().isoformat(), change_order_id),
+            )
 
-        return {
-            "status": "action_required",
-            "change_order_id": change_order_id,
-            "hosting_invoice_id": invoice["hosted_invoice_url"],
-        }
+            conn.commit()
+            cur.close()
+            conn.close()
+
+            logger.info(f"Payment action required for change order {change_order_id}")
+
+            return {
+                "status": "action_required",
+                "change_order_id": change_order_id,
+                "hosting_invoice_id": invoice["hosted_invoice_url"],
+            }
+
+        except Exception as e:
+            logger.error(f"Failed to handle payment action required: {str(e)}")
+            raise
 
     def _handle_charge_refunded(self, charge: Dict[str, Any]) -> Dict[str, Any]:
         """Handle charge.refunded event."""
@@ -313,24 +366,40 @@ class StripeInvoicingService:
             logger.warning("Refund with no associated invoice")
             return {"status": "no_invoice"}
 
-        # Fetch invoice to get change order ID
-        invoice = self.stripe_client.Invoice.retrieve(invoice_id)
-        change_order_id = invoice.get("metadata", {}).get("change_order_id")
+        try:
+            # Fetch invoice to get change order ID
+            invoice = self.stripe_client.Invoice.retrieve(invoice_id)
+            change_order_id = invoice.get("metadata", {}).get("change_order_id")
 
-        if change_order_id:
-            # Update change order
-            self.supabase.table("change_orders").update({
-                "payment_status": "refunded",
-                "updated_at": datetime.utcnow().isoformat(),
-            }).eq("id", change_order_id).execute()
+            if change_order_id:
+                # Update change order
+                conn = psycopg2.connect(self.database_url)
+                cur = conn.cursor()
 
-            logger.info(f"Refund processed for change order {change_order_id}")
+                cur.execute(
+                    """
+                    UPDATE change_orders
+                    SET payment_status = %s, updated_at = %s
+                    WHERE id = %s
+                    """,
+                    ("refunded", datetime.utcnow().isoformat(), change_order_id),
+                )
 
-        return {
-            "status": "refunded",
-            "change_order_id": change_order_id,
-            "amount": charge["amount_refunded"],
-        }
+                conn.commit()
+                cur.close()
+                conn.close()
+
+                logger.info(f"Refund processed for change order {change_order_id}")
+
+            return {
+                "status": "refunded",
+                "change_order_id": change_order_id,
+                "amount": charge["amount_refunded"],
+            }
+
+        except Exception as e:
+            logger.error(f"Failed to handle refund: {str(e)}")
+            raise
 
     def get_invoice_status(self, change_order_id: str) -> Dict[str, Any]:
         """
@@ -373,34 +442,55 @@ class StripeInvoicingService:
     # Private helper methods
 
     def _fetch_change_order(self, change_order_id: str) -> Optional[Dict[str, Any]]:
-        """Fetch change order from Supabase."""
-        response = (
-            self.supabase.table("change_orders")
-            .select("*")
-            .eq("id", change_order_id)
-            .execute()
-        )
-        return response.data[0] if response.data else None
+        """Fetch change order from PostgreSQL."""
+        try:
+            conn = psycopg2.connect(self.database_url)
+            cur = conn.cursor(cursor_factory=RealDictCursor)
+            cur.execute(
+                "SELECT * FROM change_orders WHERE id = %s",
+                (change_order_id,),
+            )
+            result = cur.fetchone()
+            cur.close()
+            conn.close()
+            return dict(result) if result else None
+        except Exception as e:
+            logger.error(f"Failed to fetch change order: {str(e)}")
+            return None
 
     def _fetch_engagement(self, engagement_id: str) -> Dict[str, Any]:
-        """Fetch engagement from Supabase."""
-        response = (
-            self.supabase.table("engagements")
-            .select("*")
-            .eq("id", engagement_id)
-            .execute()
-        )
-        return response.data[0] if response.data else {}
+        """Fetch engagement from PostgreSQL."""
+        try:
+            conn = psycopg2.connect(self.database_url)
+            cur = conn.cursor(cursor_factory=RealDictCursor)
+            cur.execute(
+                "SELECT * FROM engagements WHERE id = %s",
+                (engagement_id,),
+            )
+            result = cur.fetchone()
+            cur.close()
+            conn.close()
+            return dict(result) if result else {}
+        except Exception as e:
+            logger.error(f"Failed to fetch engagement: {str(e)}")
+            return {}
 
     def _fetch_client(self, client_id: str) -> Dict[str, Any]:
-        """Fetch client from Supabase."""
-        response = (
-            self.supabase.table("clients")
-            .select("*")
-            .eq("id", client_id)
-            .execute()
-        )
-        return response.data[0] if response.data else {}
+        """Fetch client from PostgreSQL."""
+        try:
+            conn = psycopg2.connect(self.database_url)
+            cur = conn.cursor(cursor_factory=RealDictCursor)
+            cur.execute(
+                "SELECT * FROM clients WHERE id = %s",
+                (client_id,),
+            )
+            result = cur.fetchone()
+            cur.close()
+            conn.close()
+            return dict(result) if result else {}
+        except Exception as e:
+            logger.error(f"Failed to fetch client: {str(e)}")
+            return {}
 
     def _get_or_create_customer(
         self,
@@ -453,27 +543,32 @@ class StripeInvoicingService:
         )
 
         # Fetch detailed line items from change_order_items table
-        response = (
-            self.supabase.table("change_order_items")
-            .select("*")
-            .eq("change_order_id", change_order["id"])
-            .execute()
-        )
+        try:
+            conn = psycopg2.connect(self.database_url)
+            cur = conn.cursor(cursor_factory=RealDictCursor)
+            cur.execute(
+                "SELECT * FROM change_order_items WHERE change_order_id = %s",
+                (change_order["id"],),
+            )
+            line_items = cur.fetchall()
+            cur.close()
+            conn.close()
 
-        if response.data:
-            items = []  # Replace with detailed items
-            for item in response.data:
-                unit_amount = int(
-                    Decimal(str(item["unit_cost"])) * 100
-                )
-                items.append(
-                    InvoiceLineItem(
-                        description=item["description"],
-                        quantity=Decimal(str(item["quantity"])),
-                        unit_amount=unit_amount,
-                        amount=int(Decimal(str(item["amount"])) * 100),
+            if line_items:
+                items = []  # Replace with detailed items
+                for item in line_items:
+                    unit_amount = int(Decimal(str(item["unit_cost"])) * 100)
+                    items.append(
+                        InvoiceLineItem(
+                            description=item["description"],
+                            quantity=Decimal(str(item["quantity"])),
+                            unit_amount=unit_amount,
+                            amount=int(Decimal(str(item["amount"])) * 100),
+                        )
                     )
-                )
+
+        except Exception as e:
+            logger.error(f"Failed to fetch line items: {str(e)}")
 
         return items
 
@@ -483,11 +578,23 @@ class StripeInvoicingService:
         stripe_invoice_id: str,
     ) -> None:
         """Update change order with Stripe invoice ID."""
-        self.supabase.table("change_orders").update({
-            "stripe_invoice_id": stripe_invoice_id,
-            "payment_status": "draft",
-            "updated_at": datetime.utcnow().isoformat(),
-        }).eq("id", change_order_id).execute()
+        try:
+            conn = psycopg2.connect(self.database_url)
+            cur = conn.cursor()
+            cur.execute(
+                """
+                UPDATE change_orders
+                SET stripe_invoice_id = %s, payment_status = %s, updated_at = %s
+                WHERE id = %s
+                """,
+                (stripe_invoice_id, "draft", datetime.utcnow().isoformat(), change_order_id),
+            )
+            conn.commit()
+            cur.close()
+            conn.close()
+        except Exception as e:
+            logger.error(f"Failed to update change order invoice: {str(e)}")
+            raise
 
     def _create_payment_link(
         self,

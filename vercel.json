@@ -25,8 +25,7 @@
     }
   ],
   "env": {
-    "SUPABASE_URL": "@supabase_url",
-    "SUPABASE_ANON_KEY": "@supabase_anon_key",
+    "DATABASE_URL": "@railway_database_url",
     "STRIPE_API_KEY": "@stripe_api_key",
     "STRIPE_WEBHOOK_SECRET": "@stripe_webhook_secret",
     "TRIGGER_API_KEY": "@trigger_api_key",

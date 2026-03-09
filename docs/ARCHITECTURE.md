@@ -5,11 +5,18 @@
 Scope Tracker is a scope drift detection system for fixed-fee professional services engagements. It sits between the engagement letter (planned scope) and time tracking system (actual work) and alerts when the two diverge.
 
 **Design Philosophy:**
-- No database, no server, no cloud infrastructure
-- JSON files on a shared drive (firm's existing infrastructure)
-- Designed for small teams with no IT staff
-- Zero external dependencies (pure Python stdlib)
-- Simple, auditable, trustworthy
+- PostgreSQL hosted on Railway for persistent data storage
+- Direct database connections via standard clients (psycopg2 for Python, pg for Node)
+- Single-tenant deployment: no multi-tenancy complexity, no Row-Level Security overhead
+- Designed for professional services firms with managed infrastructure
+- Simple, auditable, cost-effective—30% savings vs. Supabase
+
+**Database Layer:**
+- Railway-hosted PostgreSQL 15 (simple, single-instance deployment)
+- Direct connection via `DATABASE_URL` environment variable
+- Standard SQL queries (no ORM abstraction required)
+- Automatic backups, daily snapshots, version control
+- No RLS—role-based access control handled at application layer
 
 ---
 
@@ -267,51 +274,55 @@ MatchResult:
 
 ---
 
-### 4. **json_store.py** (Persistence Layer)
+### 4. **database.py** (PostgreSQL Data Access Layer)
 
-Saves and loads engagement state to/from JSON files.
+Manages connections and queries to Railway-hosted PostgreSQL.
 
 **Key Classes:**
 
-- `JSONStore` — File I/O for engagements
-  - Directory structure: `data/engagements/{engagement_id}/`
-  - `engagement.json` — Main engagement definition
-  - `time_entries.json` — List of all time entries
-  - `change_orders/{co_id}.json` — Individual change order documents
-  - `drift_history.json` — Weekly snapshots of drift alerts
+- `DatabaseClient` — Connection pooling and query execution
+  - Configurable pool size (default: 5 connections)
+  - Auto-reconnect on connection loss
+  - Async support via `asyncpg` for Trigger.dev jobs
+  - Synchronous `psycopg2` for standard endpoints
 
-- `FileLock` — Simple file-based lock
-  - Used for shared drive support (multiple partners might read/write simultaneously)
-  - Create a `.lock` file to indicate writer is active
-  - Other processes wait or skip
+- `EngagementRepository` — Query interface for engagements
+  - `get_engagement(engagement_id)` — Load single engagement with relationships
+  - `list_engagements(filter=None)` — Query with optional filters (owner, status, date range)
+  - `save_engagement(engagement)` — Insert or update
+  - `get_by_client(client_id)` — Find all engagements for client
+
+- `TimeEntryRepository`, `DeliverableRepository`, `DriftEventRepository` — Domain-specific query layers
 
 **API:**
 
 ```python
-store = JSONStore(data_dir="data")
+from database import DatabaseClient
 
-# Save
-store.save_engagement(engagement)           # engagement.json
-store.save_time_entries(engagement_id, entries)  # time_entries.json
-store.save_change_order(engagement_id, co)  # change_orders/CO-001.json
-store.append_drift_history(engagement_id, snapshot)  # append to drift_history.json
+db = DatabaseClient(database_url=os.environ["DATABASE_URL"])
 
-# Load
-eng = store.load_engagement(engagement_id)  # Reconstructs full object
-entries = store.load_time_entries(engagement_id)
-cos = store.load_change_orders(engagement_id)
-history = store.load_drift_history(engagement_id)
+# Query
+engagement = db.engagements.get_engagement("eng-123")
+entries = db.time_entries.get_by_engagement("eng-123")
+drifts = db.drift_events.list_critical(engagement_id="eng-123")
 
-# Utility
-all_ids = store.list_engagements()
-store.backup("backup.zip")
+# Mutate
+db.time_entries.insert(entry)
+db.drift_events.insert(drift_event)
+db.change_orders.update_status("co-456", "approved")
+
+# Connection management
+db.connect()  # Initialize pool
+db.health_check()  # Verify connectivity
+db.close()  # Graceful shutdown
 ```
 
 **Design:**
-- Human-readable JSON (partners can inspect files)
-- Custom JSON encoder for enums and dates
-- File locking for shared drive robustness
-- Auto-save pattern (save on every change, not "save" button)
+- Standard PostgreSQL queries (no ORM abstraction)
+- Connection pooling for efficiency
+- Prepared statements to prevent SQL injection
+- Async support for background jobs (Trigger.dev)
+- Explicit transaction handling for complex operations
 
 ---
 
@@ -401,33 +412,29 @@ Formats change orders as professional documents.
 
 ## Design Decisions
 
-### 1. **No Database**
-**Why:** Small firm, no IT staff, shared drive already exists.
-**Trade-off:** No complex queries or aggregations, but JSON is fine for 40 engagements.
+### 1. **Railway PostgreSQL over Supabase**
+**Why:** Single-tenant deployment for a specific law firm—no multi-tenancy complexity or Row-Level Security overhead. Direct database connections eliminate the need for Supabase's abstraction layer. 30% cost savings vs. Supabase at equivalent scale.
+**Trade-off:** Lose multi-tenant infrastructure but gain operational simplicity, predictable pricing, and standard PostgreSQL semantics. Easier to debug and audit.
 
-### 2. **JSON over SQLite**
-**Why:** Files are easier to backup, version control, inspect manually.
-**Trade-off:** No transactions, but file locking handles shared drive contention.
+### 2. **Direct Database Client (psycopg2/asyncpg) over Supabase SDK**
+**Why:** Standard PostgreSQL clients are battle-tested, have zero proprietary abstractions, and work seamlessly with background jobs (Trigger.dev) and web servers (Vercel).
+**Trade-off:** Write more SQL, lose some convenience (Supabase convenience features like auto-RLS), but gain control and transparency.
 
-### 3. **No External Dependencies**
-**Why:** Ensures tool works offline, on any Python 3.11+ environment, requires no pip install.
-**Trade-off:** Slightly more code (e.g., custom JSON encoder), no fancy features.
+### 3. **Dataclasses over ORM for Domain Model**
+**Why:** Simple, readable, directly serializable to JSON. Transparent computation of properties like margin and burn rate.
+**Trade-off:** Less automatic relationship management, but transparency is a feature in this domain where financial accuracy is critical.
 
-### 4. **Dataclasses over ORM**
-**Why:** Simple, readable, directly serializable to JSON.
-**Trade-off:** Less automatic relationship management, but transparency is a feature here.
+### 4. **Keyword Matching over ML for Entry Classification**
+**Why:** Interpretable, debuggable, no training data required. Legal work has structured vocabulary ("lease assignment," "due diligence review").
+**Trade-off:** Won't catch creative descriptions, but good enough for professional services time entries.
 
-### 5. **Keyword Matching over ML**
-**Why:** Interpretable, debuggable, no training data required.
-**Trade-off:** Won't catch creative descriptions, but good enough for legal work descriptions.
+### 5. **Conservative Alert Thresholds**
+**Why:** Missing scope drift (false negative) costs thousands in absorbed fees. Catching a false positive costs 10 seconds of a partner's time.
+**Trade-off:** More alerts, but configurable per firm. Partners develop quick triage habits.
 
-### 6. **Conservative Alert Thresholds**
-**Why:** Missing drift (false negative) costs thousands. Catching a false positive costs 10 seconds.
-**Trade-off:** More alerts, but partners are okay dismissing non-issues.
-
-### 7. **Auto-Save, No Save Button**
-**Why:** Risk of data loss is unacceptable (partners won't remember to save).
-**Trade-off:** Every operation writes to disk (slower, but acceptable performance).
+### 6. **Application-Layer Role-Based Access over RLS**
+**Why:** Single-tenant deployment doesn't benefit from row-level security complexity. Simpler to reason about, easier to debug, fewer database round-trips.
+**Trade-off:** All authorization logic lives in application code, not database. Requires explicit permission checks in every query endpoint.
 
 ---
 

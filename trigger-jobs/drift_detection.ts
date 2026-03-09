@@ -1,6 +1,5 @@
 import { logger, task, wait } from "@trigger.dev/sdk/v3";
-import { createClient } from "@supabase/supabase-js";
-import type { Database } from "../types/database";
+import { Pool } from "pg";
 
 interface DriftDetectionPayload {
   engagement_id: string;
@@ -55,50 +54,48 @@ interface DriftEvent {
   notes: string;
 }
 
-const supabase = createClient<Database>(
-  process.env.SUPABASE_URL!,
-  process.env.SUPABASE_ANON_KEY!
-);
+const pool = new Pool({
+  connectionString: process.env.DATABASE_URL!,
+});
 
 export const driftDetectionJob = task({
   id: "drift-detection",
   run: async (payload: DriftDetectionPayload, { ctx }) => {
+    const client = await pool.connect();
+
     logger.info("Starting drift detection", {
       engagement_id: payload.engagement_id,
       trigger_event: payload.trigger_event,
     });
 
     try {
-      // Fetch engagement and time entries
-      const { data: engagement, error: engError } = await supabase
-        .from("engagements")
-        .select("id, total_budget, estimated_hours, start_date, owner_id")
-        .eq("id", payload.engagement_id)
-        .single();
+      // Fetch engagement
+      const engResult = await client.query(
+        "SELECT id, total_budget, estimated_hours, start_date, owner_id FROM engagements WHERE id = $1",
+        [payload.engagement_id]
+      );
 
-      if (engError || !engagement) {
-        throw new Error(`Failed to fetch engagement: ${engError?.message}`);
+      if (engResult.rows.length === 0) {
+        throw new Error(`Engagement ${payload.engagement_id} not found`);
       }
+
+      const engagement = engResult.rows[0];
 
       // Fetch all time entries for engagement
-      const { data: timeEntries, error: entriesError } = await supabase
-        .from("time_entries")
-        .select("*")
-        .eq("engagement_id", payload.engagement_id);
+      const entriesResult = await client.query(
+        "SELECT * FROM time_entries WHERE engagement_id = $1",
+        [payload.engagement_id]
+      );
 
-      if (entriesError) {
-        throw new Error(`Failed to fetch time entries: ${entriesError.message}`);
-      }
+      const timeEntries = entriesResult.rows;
 
       // Fetch deliverables
-      const { data: deliverables, error: delError } = await supabase
-        .from("scoped_deliverables")
-        .select("id, title, estimated_hours, status")
-        .eq("engagement_id", payload.engagement_id);
+      const delResult = await client.query(
+        "SELECT id, title, estimated_hours, status FROM scoped_deliverables WHERE engagement_id = $1",
+        [payload.engagement_id]
+      );
 
-      if (delError) {
-        throw new Error(`Failed to fetch deliverables: ${delError.message}`);
-      }
+      const deliverables = delResult.rows;
 
       // Calculate drift metrics
       const metrics = calculateDriftMetrics(
@@ -118,20 +115,23 @@ export const driftDetectionJob = task({
 
       // Save drift events to database
       for (const event of driftEvents) {
-        const { error: saveError } = await supabase
-          .from("drift_events")
-          .insert({
-            engagement_id: payload.engagement_id,
-            drift_type: event.drift_type,
-            severity: event.severity,
-            unscoped_hours: event.unscoped_hours,
-            budget_consumed_percent: event.budget_consumed_percent,
-            related_time_entries: event.related_time_entries,
-            notes: event.notes,
-          } as any);
-
-        if (saveError) {
-          logger.error("Failed to save drift event", { error: saveError });
+        try {
+          await client.query(
+            `INSERT INTO drift_events
+             (engagement_id, drift_type, severity, unscoped_hours, budget_consumed_percent, related_time_entries, notes)
+             VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+            [
+              payload.engagement_id,
+              event.drift_type,
+              event.severity,
+              event.unscoped_hours,
+              event.budget_consumed_percent,
+              JSON.stringify(event.related_time_entries),
+              event.notes,
+            ]
+          );
+        } catch (error) {
+          logger.error("Failed to save drift event", { error });
         }
       }
 
@@ -177,6 +177,8 @@ export const driftDetectionJob = task({
       });
 
       throw error;
+    } finally {
+      client.release();
     }
   },
 });

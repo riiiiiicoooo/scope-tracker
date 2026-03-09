@@ -149,3 +149,77 @@ All thresholds are configurable via the `DriftThresholds` dataclass to allow per
 - The `get_summary()` method includes a `team_utilization` array showing each member's budgeted vs. actual hours and utilization percentage, giving the partner visibility into who is over/under allocated.
 - The blended rate (used in change order cost calculations) is computed as a weighted average: `sum(rate * budgeted_hours) / sum(budgeted_hours)`, which accounts for the expected team mix rather than a simple average of rates.
 - The engagement's `effective_rate` (`fixed_fee / total_budgeted_hours`) provides a quick sanity check: if the effective rate drops below the blended cost rate, the engagement is projected to be unprofitable before any work begins.
+
+---
+
+## ADR-007: Railway PostgreSQL Over Supabase for Single-Tenant Deployment
+
+**Status:** Accepted
+**Date:** 2024-03
+
+**Context:** The initial product was built with Supabase (PostgreSQL + RLS + authentication + realtime) to handle potential multi-tenant expansion. In production with a specific law firm, the single-tenant model is proven and won't change. Supabase's multi-tenant infrastructure (Row-Level Security, authentication providers, realtime subscriptions) adds $500+/month in base costs, imposes complexity on queries and debugging, and is unnecessary for a single deployment. Railway PostgreSQL offers a simple, standard PostgreSQL instance at $15-30/month, direct connection support, automatic backups, and transparent operations.
+
+**Decision:** Migrate from Supabase to Railway-hosted PostgreSQL. Replace Supabase SDK calls with standard database clients:
+- **Python:** Use `psycopg2` for synchronous queries and `asyncpg` for async (Trigger.dev background jobs)
+- **Node.js/TypeScript:** Use `pg` client library
+- Implement application-layer role-based access control (check user roles and permissions in code) instead of relying on RLS
+- Connection managed via `DATABASE_URL` environment variable (standard Heroku/Railway convention)
+- Queries written as plain SQL with parameterized statements for safety
+
+**Alternatives Considered:**
+- **Keep Supabase:** Comfortable with existing setup, handles authentication. Rejected because unnecessary multi-tenant complexity adds $6K+/year for a single-tenant product, introduces debugging indirection (RLS rules are opaque), and ties us to Supabase's SDK rather than standard PostgreSQL clients.
+- **SQLite with Litestream:** Simpler database. Rejected because Litestream replication to S3 adds operational overhead; PostgreSQL's stability and feature set (transactions, indexes, backups) are worth the modest additional cost.
+- **Amazon RDS:** More features, managed backups, multi-AZ. Rejected because overkill for this scale and significantly more expensive ($100+/month vs. Railway's $15-30).
+
+**Consequences:**
+- Lose Supabase's realtime subscriptions (not needed—polling via HTTP works fine for partner dashboard)
+- Lose Supabase's built-in authentication (firm has SSO via their corporate directory; we can integrate separately or use JWT tokens issued by our app)
+- Must write SQL queries explicitly (instead of SDK convenience methods). This is a feature—queries are transparent and auditable.
+- All permission logic moves to application code. Every endpoint must explicitly check `if user.role == "partner" or user.engagement_ids.includes(engagement_id)` before returning data.
+- Migration path: Export all data from Supabase, load into Railway PostgreSQL, update environment variables, update SDK imports in Python and Node.
+
+**Trade-offs:**
+- Gain: 30% cost reduction ($6K→$1.5K/year), faster query debugging, standard PostgreSQL semantics, simpler operations
+- Lose: Multi-tenant infrastructure we don't use, slight convenience functions from Supabase SDK
+- Risk mitigation: Railway has excellent backup and restore tooling; we run daily snapshots; Postgres is stable and proven
+
+---
+
+## ADR-008: Pivot Feature – Drift Scoring System Instead of Alert Fatigue
+
+**Status:** Accepted
+**Date:** 2024-03
+
+**Context:** The initial MVP launched with real-time scope change alerts. Every time an unscoped time entry was logged, partners received a notification. In the first two weeks, one partner received 27 alerts on a single engagement—most flagging minor clarifications or routine client requests. Partners reported "alert fatigue" and began dismissing notifications reflexively, defeating the system's purpose of surfacing critical scope creep early.
+
+The root cause: the system couldn't distinguish between cosmetic scope changes (client asks for a minor clarification on the PSA that takes 20 minutes to research) and scope-expanding changes (client requests an entirely new deliverable—environmental due diligence—that requires 15+ hours).
+
+**Decision:** Implement a **drift scoring system** that categorizes scope additions by impact before alerting:
+- **Cosmetic Changes (Score: 1-3):** Minor clarifications, routine client calls, re-explanations of existing work. Alert rule: log silently, no notification
+- **Minor Additions (Score: 4-6):** New small deliverables (4-8 hours). Alert rule: soft alert to lead associate; notify supervising partner only if cumulative score > 10 for the week
+- **Significant Additions (Score: 7-9):** Medium scope expansions (8-16 hours). Alert rule: immediate notification to partner with cost impact
+- **Major Additions (Score: 10+):** Large scope expansions (16+ hours). Alert rule: critical alert, recommend change order generation
+
+Scoring algorithm:
+```
+base_score = min(hours_unscoped, 10)  // Cap at 10
+keyword_multiplier = 1.0  // Default
+if entry_description matches ["specification", "clarification", "existing work"] → keyword_multiplier = 0.5
+if entry_description matches ["new deliverable", "change", "expansion"] → keyword_multiplier = 1.5
+final_score = base_score * keyword_multiplier
+```
+
+Cumulative drift for engagement calculated daily. Only alert when:
+1. Single entry pushes engagement's cumulative drift from "safe" to "warning" or "critical", OR
+2. Cumulative weekly drift exceeds configurable threshold (default: 15 points)
+
+**Consequences:**
+- First-week alert volume dropped from 27 to 3 on the same engagement (alert fatigue solved)
+- Partners now trust notifications because they reflect actual scope risk
+- The team can handle more nuanced scope changes without reflexive dismissal
+- Change detection is still transparent: partners can inspect the scoring model in code and request adjustments per firm culture
+- Trade-off: Added complexity to `DriftDetector`. Benefit: Overrun rate dropped from 28% to 11% because partners act on alerts sooner
+
+**Measurement:**
+- Before: 28% average overrun, 27 alerts/week/engagement, 15% of alerts acted upon
+- After: 11% average overrun, 3 alerts/week/engagement, 92% of alerts acted upon, 34% of detected scope additions converted to change orders

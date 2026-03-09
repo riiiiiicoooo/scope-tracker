@@ -124,13 +124,14 @@ The Scope Tracker now includes production-ready infrastructure for deployment an
 - Fixed-fee engagement economics reference
 - Drift detection and change order workflows
 
-### 2. **Database & Schema** (`supabase/migrations/001_initial_schema.sql`)
-- **PostgreSQL schema** with:
+### 2. **Database & Schema** (`migrations/001_initial_schema.sql`)
+- **PostgreSQL hosted on Railway** with:
   - Engagements, deliverables, time entries, drift events, change orders
-  - Row-Level Security (RLS) for multi-tenant access control
-  - Partners see all firm engagements; associates see assigned engagements only
+  - Simple schema with role-based access control at the application layer
+  - Single-tenant deployment: no multi-tenancy complexity, no Row-Level Security overhead
   - Immutable audit trail for all scope decisions
   - Indexes on engagement, deliverable, and time entry queries
+  - Direct `psycopg2`/`asyncpg` connections for Python; `pg` client for Node
 
 ### 3. **Automation Workflows** (n8n)
 
@@ -215,16 +216,25 @@ Production-grade Stripe integration:
 - Cron jobs:
   - Weekly digest (Monday 8 AM)
   - Engagement health check (daily 9 AM)
-- Environment variables for all secrets
+- Environment variables for all secrets (Railway PostgreSQL credentials, Stripe, etc.)
+
+**Railway PostgreSQL** (Production Database):
+- Single-tenant PostgreSQL 15 instance
+- Direct connection via `DATABASE_URL` connection string
+- No RLS overhead—role-based access handled at application layer
+- Automated backups and daily snapshots
+- Simple deployment: zero infrastructure complexity
 
 **Replit Dev Environment** (`.replit`, `replit.nix`):
-- PostgreSQL 15 auto-setup
+- PostgreSQL 15 auto-setup (mirrors Railway config)
 - Node.js 20 + Python 3.11
 - Automatic database initialization
 - Local development server
 
 **Environment Variables** (`.env.example`):
-- Documented all integration keys (Supabase, Stripe, Clio, PracticePanther, Resend, etc.)
+- Railway PostgreSQL connection string (`DATABASE_URL`)
+- Stripe, Clio, PracticePanther, Resend API keys
+- Trigger.dev, n8n credentials
 - Configurable thresholds (drift warning: 75% budget, etc.)
 - Feature flags for optional integrations
 - Security settings (JWT, CSRF, rate limiting)
@@ -240,7 +250,7 @@ Clio / PracticePanther
         ↓
    Trigger.dev: Drift Detection
         ↓
-   ├─ Save drift event → Supabase
+   ├─ Save drift event → Railway PostgreSQL
    ├─ Trigger alerts (email)
    └─ Auto-generate change order (draft)
         ↓

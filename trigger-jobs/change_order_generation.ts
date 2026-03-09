@@ -1,6 +1,5 @@
 import { logger, task } from "@trigger.dev/sdk/v3";
-import { createClient } from "@supabase/supabase-js";
-import type { Database } from "../types/database";
+import { Pool } from "pg";
 
 interface ChangeOrderPayload {
   engagement_id: string;
@@ -32,14 +31,15 @@ interface DriftData {
   notes: string;
 }
 
-const supabase = createClient<Database>(
-  process.env.SUPABASE_URL!,
-  process.env.SUPABASE_ANON_KEY!
-);
+const pool = new Pool({
+  connectionString: process.env.DATABASE_URL!,
+});
 
 export const changeOrderGenerationJob = task({
   id: "change-order-generation",
   run: async (payload: ChangeOrderPayload, { ctx }) => {
+    const pgClient = await pool.connect();
+
     logger.info("Starting change order generation", {
       engagement_id: payload.engagement_id,
       trigger: payload.trigger,
@@ -47,37 +47,39 @@ export const changeOrderGenerationJob = task({
 
     try {
       // Fetch engagement
-      const { data: engagement, error: engError } = await supabase
-        .from("engagements")
-        .select("*")
-        .eq("id", payload.engagement_id)
-        .single();
+      const engResult = await pgClient.query(
+        "SELECT * FROM engagements WHERE id = $1",
+        [payload.engagement_id]
+      );
 
-      if (engError || !engagement) {
-        throw new Error(`Failed to fetch engagement: ${engError?.message}`);
+      if (engResult.rows.length === 0) {
+        throw new Error(`Engagement ${payload.engagement_id} not found`);
       }
+
+      const engagement = engResult.rows[0] as EngagementData;
 
       // Fetch client
-      const { data: client, error: clientError } = await supabase
-        .from("clients")
-        .select("*")
-        .eq("id", engagement.client_id)
-        .single();
+      const clientResult = await pgClient.query(
+        "SELECT * FROM clients WHERE id = $1",
+        [engagement.client_id]
+      );
 
-      if (clientError || !client) {
-        throw new Error(`Failed to fetch client: ${clientError?.message}`);
+      if (clientResult.rows.length === 0) {
+        throw new Error(`Client ${engagement.client_id} not found`);
       }
+
+      const client = clientResult.rows[0] as ClientData;
 
       // Fetch drift event if available
       let driftData: DriftData | null = null;
       if (payload.drift_event_id) {
-        const { data: driftEvent, error: driftError } = await supabase
-          .from("drift_events")
-          .select("*")
-          .eq("id", payload.drift_event_id)
-          .single();
+        const driftResult = await pgClient.query(
+          "SELECT * FROM drift_events WHERE id = $1",
+          [payload.drift_event_id]
+        );
 
-        if (!driftError && driftEvent) {
+        if (driftResult.rows.length > 0) {
+          const driftEvent = driftResult.rows[0];
           driftData = {
             unscoped_hours: driftEvent.unscoped_hours || payload.unscoped_hours,
             unscoped_amount: driftEvent.unscoped_amount || 0,
@@ -100,59 +102,74 @@ export const changeOrderGenerationJob = task({
 
       // Generate change order draft
       const changeOrderDraft = generateChangeOrderDraft(
-        engagement as EngagementData,
-        client as ClientData,
+        engagement,
+        client,
         driftData
       );
 
       // Save change order to database
-      const { data: savedOrder, error: saveError } = await supabase
-        .from("change_orders")
-        .insert({
-          engagement_id: payload.engagement_id,
-          drift_event_id: payload.drift_event_id,
-          created_by_id: engagement.owner_id,
-          status: "draft",
-          title: changeOrderDraft.title,
-          description: changeOrderDraft.description,
-          scope_additions: changeOrderDraft.scope_additions,
-          estimated_additional_hours: changeOrderDraft.estimated_additional_hours,
-          estimated_additional_cost: changeOrderDraft.estimated_additional_cost,
-          revised_total_budget: changeOrderDraft.revised_total_budget,
-          revised_completion_date: changeOrderDraft.revised_completion_date,
-          notes: `Generated automatically on ${new Date().toISOString()}`,
-        } as any)
-        .select();
+      const coResult = await pgClient.query(
+        `INSERT INTO change_orders
+         (engagement_id, drift_event_id, created_by_id, status, title, description, scope_additions,
+          estimated_additional_hours, estimated_additional_cost, revised_total_budget, revised_completion_date, notes)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+         RETURNING id`,
+        [
+          payload.engagement_id,
+          payload.drift_event_id || null,
+          engagement.owner_id,
+          "draft",
+          changeOrderDraft.title,
+          changeOrderDraft.description,
+          changeOrderDraft.scope_additions,
+          changeOrderDraft.estimated_additional_hours,
+          changeOrderDraft.estimated_additional_cost,
+          changeOrderDraft.revised_total_budget,
+          changeOrderDraft.revised_completion_date,
+          `Generated automatically on ${new Date().toISOString()}`,
+        ]
+      );
 
-      if (saveError) {
-        throw new Error(`Failed to save change order: ${saveError.message}`);
+      const changeOrderId = coResult.rows[0]?.id;
+
+      if (!changeOrderId) {
+        throw new Error("Failed to create change order");
       }
 
       logger.info("Change order draft generated", {
-        change_order_id: savedOrder?.[0]?.id,
+        change_order_id: changeOrderId,
         additional_cost: changeOrderDraft.estimated_additional_cost,
       });
 
       // Create line items
-      if (savedOrder && savedOrder.length > 0) {
-        const lineItems = generateLineItems(
-          savedOrder[0].id,
-          changeOrderDraft.scope_additions_details,
-          engagement as EngagementData
-        );
+      const lineItems = generateLineItems(
+        changeOrderId,
+        changeOrderDraft.scope_additions_details,
+        engagement
+      );
 
-        const { error: itemsError } = await supabase
-          .from("change_order_items")
-          .insert(lineItems);
-
-        if (itemsError) {
-          logger.error("Failed to save line items", { error: itemsError });
+      for (const item of lineItems) {
+        try {
+          await pgClient.query(
+            `INSERT INTO change_order_items
+             (change_order_id, description, quantity, unit_cost, amount)
+             VALUES ($1, $2, $3, $4, $5)`,
+            [
+              item.change_order_id,
+              item.description,
+              item.quantity,
+              item.unit_cost,
+              item.amount,
+            ]
+          );
+        } catch (error) {
+          logger.error("Failed to save line item", { error });
         }
       }
 
       return {
         success: true,
-        change_order_id: savedOrder?.[0]?.id,
+        change_order_id: changeOrderId,
         engagement_id: payload.engagement_id,
         additional_cost: changeOrderDraft.estimated_additional_cost,
         additional_hours: changeOrderDraft.estimated_additional_hours,
@@ -165,6 +182,8 @@ export const changeOrderGenerationJob = task({
       });
 
       throw error;
+    } finally {
+      pgClient.release();
     }
   },
 });
@@ -239,7 +258,13 @@ function generateLineItems(
     unit_rate: number;
   }>,
   engagement: EngagementData
-) {
+): Array<{
+  change_order_id: string;
+  description: string;
+  quantity: number;
+  unit_cost: number;
+  amount: number;
+}> {
   return items.map((item) => ({
     change_order_id: changeOrderId,
     description: item.description,
