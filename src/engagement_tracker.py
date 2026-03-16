@@ -472,10 +472,15 @@ class EngagementManager:
 
     In production, this would persist to SQLite or JSON files on the
     shared drive. For the prototype, it's in-memory.
+
+    Args:
+        session_factory: Optional callable that returns a database session/connection.
+                        If provided, engagements will be persisted to the database.
     """
 
-    def __init__(self):
+    def __init__(self, session_factory=None):
         self._engagements: dict[str, Engagement] = {}
+        self._session_factory = session_factory
 
     def create(self, engagement: Engagement) -> Engagement:
         if engagement.id in self._engagements:
@@ -488,17 +493,56 @@ class EngagementManager:
             raise KeyError(f"Engagement '{engagement_id}' not found.")
         return self._engagements[engagement_id]
 
-    def list_active(self) -> list[Engagement]:
-        return [
+    def list_active(
+        self, limit: int = 50, offset: int = 0
+    ) -> list[Engagement]:
+        """List active engagements with pagination.
+
+        Args:
+            limit: Maximum number of results to return (default 50, max 200).
+            offset: Number of results to skip (default 0).
+
+        Returns:
+            List of active engagements, paginated.
+        """
+        limit = min(limit, 200)  # Cap at 200
+        results = [
             e for e in self._engagements.values()
             if e.status in (EngagementStatus.ACTIVE, EngagementStatus.CLOSING)
         ]
+        return results[offset : offset + limit]
 
-    def list_over_budget(self) -> list[Engagement]:
-        return [e for e in self.list_active() if e.is_over_budget]
+    def list_over_budget(
+        self, limit: int = 50, offset: int = 0
+    ) -> list[Engagement]:
+        """List over-budget engagements with pagination.
 
-    def list_past_deadline(self) -> list[Engagement]:
-        return [e for e in self.list_active() if e.is_past_deadline]
+        Args:
+            limit: Maximum number of results to return (default 50, max 200).
+            offset: Number of results to skip (default 0).
+
+        Returns:
+            List of over-budget engagements, paginated.
+        """
+        limit = min(limit, 200)
+        results = [e for e in self.list_active() if e.is_over_budget]
+        return results[offset : offset + limit]
+
+    def list_past_deadline(
+        self, limit: int = 50, offset: int = 0
+    ) -> list[Engagement]:
+        """List past-deadline engagements with pagination.
+
+        Args:
+            limit: Maximum number of results to return (default 50, max 200).
+            offset: Number of results to skip (default 0).
+
+        Returns:
+            List of past-deadline engagements, paginated.
+        """
+        limit = min(limit, 200)
+        results = [e for e in self.list_active() if e.is_past_deadline]
+        return results[offset : offset + limit]
 
     def get_firm_summary(self) -> dict:
         """Firm-wide engagement health summary."""

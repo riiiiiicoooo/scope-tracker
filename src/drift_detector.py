@@ -132,13 +132,24 @@ class DriftDetector:
     Runs on demand (called when new time entries are logged) or on
     a schedule (daily digest for the partner). Each detection method
     returns a list of alerts that are new since the last run.
+
+    Args:
+        thresholds: Optional DriftThresholds for customization.
+        session_factory: Optional callable that returns a database session/connection.
+                        If provided, alerts will be persisted to the database
+                        instead of in-memory storage.
     """
 
-    def __init__(self, thresholds: Optional[DriftThresholds] = None):
+    def __init__(
+        self,
+        thresholds: Optional[DriftThresholds] = None,
+        session_factory=None,
+    ):
         self._thresholds = thresholds or DriftThresholds()
         self._alerts: list[DriftAlert] = []
         self._alert_counter = 0
         self._seen_triggers: set[str] = set()  # Avoid duplicate alerts
+        self._session_factory = session_factory  # For DB persistence
 
     # -- Full Scan ----------------------------------------------------------
 
@@ -405,12 +416,68 @@ class DriftDetector:
     def _create_alert(self, **kwargs) -> DriftAlert:
         self._alert_counter += 1
         alert_id = f"DRIFT-{self._alert_counter:04d}"
-        return DriftAlert(
+        alert = DriftAlert(
             id=alert_id,
             triggered_at=datetime.now(),
             status=AlertStatus.ACTIVE,
             **kwargs,
         )
+
+        # Persist to database if session_factory is available
+        if self._session_factory:
+            self._persist_alert(alert)
+
+        return alert
+
+    def _persist_alert(self, alert: DriftAlert) -> None:
+        """Persist alert to database.
+
+        Inserts or updates the alert in the drift_alerts table.
+        This prevents unbounded in-memory growth and allows data recovery
+        after application restart.
+        """
+        try:
+            session = self._session_factory()
+            cursor = session.cursor() if hasattr(session, 'cursor') else None
+
+            if cursor:
+                cursor.execute(
+                    """
+                    INSERT INTO drift_alerts
+                    (id, engagement_id, drift_type, severity, status, title, description,
+                     triggered_at, hours_at_risk, cost_at_risk, deliverable_id, team_member,
+                     related_entry_ids, resolved_at, resolved_by, resolution_notes, change_order_id)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    ON CONFLICT (id) DO UPDATE SET status = EXCLUDED.status
+                    """,
+                    (
+                        alert.id,
+                        alert.engagement_id,
+                        alert.drift_type.value,
+                        alert.severity.value,
+                        alert.status.value,
+                        alert.title,
+                        alert.description,
+                        alert.triggered_at,
+                        alert.hours_at_risk,
+                        alert.cost_at_risk,
+                        alert.deliverable_id,
+                        alert.team_member,
+                        ",".join(alert.related_entry_ids) if alert.related_entry_ids else None,
+                        alert.resolved_at,
+                        alert.resolved_by,
+                        alert.resolution_notes,
+                        alert.change_order_id,
+                    ),
+                )
+                session.commit()
+                cursor.close()
+        except Exception as e:
+            # Log but don't fail if DB persistence fails
+            import logging
+            logging.getLogger(__name__).warning(
+                f"Failed to persist alert {alert.id} to database: {e}"
+            )
 
     def _is_new_trigger(self, trigger_key: str) -> bool:
         """Check if we've already created an alert for this trigger."""

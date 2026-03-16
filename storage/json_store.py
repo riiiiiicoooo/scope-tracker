@@ -278,16 +278,28 @@ class JSONStore:
         except json.JSONDecodeError:
             return []
 
-    def list_engagements(self) -> List[str]:
-        """List all engagement IDs in the store."""
+    def list_engagements(
+        self, limit: int = 50, offset: int = 0
+    ) -> List[str]:
+        """List engagement IDs in the store with pagination.
+
+        Args:
+            limit: Maximum number of results to return (default 50, max 200).
+            offset: Number of results to skip (default 0).
+
+        Returns:
+            List of engagement IDs, paginated.
+        """
+        limit = min(limit, 200)  # Cap at 200
         eng_dir = self.base_dir / "engagements"
         if not eng_dir.exists():
             return []
 
-        return [
+        all_ids = sorted([
             d.name for d in eng_dir.iterdir()
             if d.is_dir() and not d.name.startswith(".")
-        ]
+        ])
+        return all_ids[offset : offset + limit]
 
     # -- Save Operations -------------------------------------------------------
 

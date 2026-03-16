@@ -212,30 +212,47 @@ class TimeEntryTracker:
         engagement_id: str,
         date_range: Optional[Dict[str, str]] = None,
         resource_id: Optional[str] = None,
-    ) -> List[Dict[str, Any]]:
+        limit: int = 50,
+        offset: int = 0,
+    ) -> tuple[List[Dict[str, Any]], Dict[str, List[Dict]], int]:
         """
-        Fetch time entries for engagement with optional filters.
-        
-        Returns list of time entries with resource, phase, and allocation info.
+        Fetch time entries for engagement with optional filters and pagination.
+
+        Args:
+            engagement_id: Engagement identifier
+            date_range: Optional date range filter
+            resource_id: Optional resource filter
+            limit: Maximum results to return (default 50, max 200)
+            offset: Results to skip (default 0)
+
+        Returns:
+            Tuple of (entries, grouped_by_phase, total_count)
         """
+        limit = min(limit, 200)  # Cap at 200
         try:
-            params = {"engagement_id": engagement_id}
-            
+            params = {
+                "engagement_id": engagement_id,
+                "limit": limit,
+                "offset": offset,
+            }
+
             if date_range:
                 params["start_date"] = date_range.get("start")
                 params["end_date"] = date_range.get("end")
-            
+
             if resource_id:
                 params["resource_id"] = resource_id
-            
+
             response = await self.client.get(
                 f"{self.time_tracking_api_url}/time_entries",
                 params=params,
             )
             response.raise_for_status()
-            
-            entries = response.json().get("entries", [])
-            
+
+            data = response.json()
+            entries = data.get("entries", [])
+            total_count = data.get("total_count", len(entries))
+
             # Group by phase if requested
             grouped = {}
             for entry in entries:
@@ -243,11 +260,11 @@ class TimeEntryTracker:
                 if phase not in grouped:
                     grouped[phase] = []
                 grouped[phase].append(entry)
-            
-            return entries, grouped
+
+            return entries, grouped, total_count
         except Exception as e:
             logger.error(f"Time entry retrieval failed: {str(e)}")
-            return [], {}
+            return [], {}, 0
 
 
 class EngagementManager:
@@ -264,25 +281,41 @@ class EngagementManager:
         self,
         tenant_id: str,
         status_filter: Optional[str] = None,
-    ) -> List[Dict[str, Any]]:
+        limit: int = 50,
+        offset: int = 0,
+    ) -> tuple[List[Dict[str, Any]], int]:
         """
-        List all engagements with status and key metrics.
-        
-        Returns engagement list with drift indicators.
+        List engagements with status and key metrics, with pagination.
+
+        Args:
+            tenant_id: Tenant identifier
+            status_filter: Optional status filter
+            limit: Maximum results to return (default 50, max 200)
+            offset: Results to skip (default 0)
+
+        Returns:
+            Tuple of (engagement list, total_count)
         """
+        limit = min(limit, 200)  # Cap at 200
         try:
-            params = {"tenant_id": tenant_id}
+            params = {
+                "tenant_id": tenant_id,
+                "limit": limit,
+                "offset": offset,
+            }
             if status_filter:
                 params["status"] = status_filter
-            
+
             response = await self.client.get(
                 f"{self.project_api_url}/engagements",
                 params=params,
             )
             response.raise_for_status()
-            
-            engagements = response.json().get("engagements", [])
-            
+
+            data = response.json()
+            engagements = data.get("engagements", [])
+            total_count = data.get("total_count", len(engagements))
+
             # Add drift indicators
             for eng in engagements:
                 drift_pct = eng.get("hours_variance_pct", 0)
@@ -295,11 +328,11 @@ class EngagementManager:
                 else:
                     eng["drift_status"] = "on_track"
                     eng["drift_indicator"] = "healthy"
-            
-            return engagements
+
+            return engagements, total_count
         except Exception as e:
             logger.error(f"Engagement listing failed: {str(e)}")
-            return []
+            return [], 0
 
 
 # Global clients
@@ -372,7 +405,7 @@ def list_tools():
         Tool(
             name="get_time_entries",
             description=(
-                "Fetch time entries for engagement with optional filtering. "
+                "Fetch time entries for engagement with optional filtering and pagination. "
                 "Returns entries by date, resource, and project phase."
             ),
             inputSchema={
@@ -400,6 +433,16 @@ def list_tools():
                         "type": "string",
                         "description": "Optional: filter to specific team member",
                     },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Maximum results (default 50, max 200)",
+                        "default": 50,
+                    },
+                    "offset": {
+                        "type": "integer",
+                        "description": "Results to skip (default 0)",
+                        "default": 0,
+                    },
                     "tenant_id": {
                         "type": "string",
                         "description": "Tenant identifier",
@@ -412,7 +455,7 @@ def list_tools():
             name="list_engagements",
             description=(
                 "List all engagements with status and scope drift indicators. "
-                "Quick overview of portfolio with risk identification."
+                "Quick overview of portfolio with risk identification. Supports pagination."
             ),
             inputSchema={
                 "type": "object",
@@ -425,6 +468,16 @@ def list_tools():
                         "type": "string",
                         "enum": ["active", "planning", "closed", "on_hold"],
                         "description": "Optional: filter by engagement status",
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Maximum results (default 50, max 200)",
+                        "default": 50,
+                    },
+                    "offset": {
+                        "type": "integer",
+                        "description": "Results to skip (default 0)",
+                        "default": 0,
                     },
                 },
                 "required": ["tenant_id"],
@@ -493,19 +546,24 @@ async def _get_time_entries(args: Dict[str, Any]) -> List[TextContent]:
     """Get time entries for engagement."""
     try:
         engagement_id = args["engagement_id"]
-        
-        entries, grouped = await time_tracker.get_time_entries(
+
+        entries, grouped, total_count = await time_tracker.get_time_entries(
             engagement_id,
             date_range=args.get("date_range"),
             resource_id=args.get("resource_id"),
+            limit=args.get("limit", 50),
+            offset=args.get("offset", 0),
         )
-        
+
         return [
             TextContent(
                 type="text",
                 text=json.dumps({
                     "engagement_id": engagement_id,
                     "entry_count": len(entries),
+                    "total_count": total_count,
+                    "limit": args.get("limit", 50),
+                    "offset": args.get("offset", 0),
                     "entries": entries,
                     "grouped_by_phase": grouped,
                     "timestamp": datetime.utcnow().isoformat(),
@@ -522,15 +580,23 @@ async def _list_engagements(args: Dict[str, Any]) -> List[TextContent]:
     try:
         tenant_id = args["tenant_id"]
         status_filter = args.get("status_filter")
-        
-        engagements = await engagement_mgr.list_engagements(tenant_id, status_filter)
-        
+
+        engagements, total_count = await engagement_mgr.list_engagements(
+            tenant_id,
+            status_filter=status_filter,
+            limit=args.get("limit", 50),
+            offset=args.get("offset", 0),
+        )
+
         return [
             TextContent(
                 type="text",
                 text=json.dumps({
                     "tenant_id": tenant_id,
                     "engagement_count": len(engagements),
+                    "total_count": total_count,
+                    "limit": args.get("limit", 50),
+                    "offset": args.get("offset", 0),
                     "engagements": engagements,
                     "timestamp": datetime.utcnow().isoformat(),
                 }, indent=2),
